@@ -7,6 +7,8 @@ import threading
 import time
 import tornado, tornado.web, tornado.websocket
 import traceback
+import cv2, base64
+import numpy as np
 
 if os.environ.get("ROS_VERSION") == "1":
     import rospy # ROS1
@@ -30,6 +32,9 @@ from rosboard.handlers import ROSBoardSocketHandler, NoCacheStaticFileHandler
 from rosboard.subscribers.diagnostics_subscriber import DiagnosticsSubscriber
 from rosboard.subscribers.pointcloud2_subscriber import PointCloud2Subscriber
 from rosboard.subscribers.laserscan_subscriber import LaserScanSubscriber
+from rosboard.subscribers.joy_subscriber import JoySubscriber
+from rosboard.subscribers.image_subscriber import ImageSubscriber
+from rosboard.subscribers.webrtc_subscriber import WebRTCSubscriber
 
 class ROSBoardNode(object):
     instance = None
@@ -226,6 +231,7 @@ class ROSBoardNode(object):
                     continue
                 
                 ## Handling for custom topic types starts below
+                ## ALL OF THESE TOPIC NAMES ARE PLACEHOLDERS!!
 
                 # handle custom diagnostics publisher
                 if topic_name == "/diagnostics":
@@ -251,6 +257,18 @@ class ROSBoardNode(object):
                         self.laserscan_subscriber = LaserScanSubscriber(self.on_pointcloud2)
                         self.laserscan_subscriber.subscribe(topic_name)
                         # self.local_subs[topic_name] = LaserScanSubscriber(self.on_laserscan)
+                
+                if topic_name == 'joy':
+                    if topic_name not in self.local_subs:
+                        rospy.loginfo("Subscribing to joy")
+                        self.joy_subscriber = JoySubscriber(self.on_joy)
+                        self.joy_subscriber.subscribe(topic_name)
+
+                if topic_name == 'image':
+                    if topic_name not in self.local_subs:
+                        rospy.loginfo("Subscribing to image")
+                        self.image_subscriber = ImageSubscriber(self.on_image)
+                        self.image_subscriber.subscribe(topic_name)
 
                 # check if remote sub request is not actually a ROS topic before proceeding
                 if topic_name not in self.all_topics:
@@ -460,6 +478,55 @@ class ROSBoardNode(object):
             ROSBoardSocketHandler.broadcast,
             [ROSBoardSocketHandler.MSG_MSG, laserscan_dict]
         )
+
+    def on_joy(self, msg):
+        if self.event_loop == None:
+            return
+        
+        joy_dict = ros2dict(msg)
+
+        self.event_loop.add_callback(
+            ROSBoardSocketHandler.broadcast,
+            [ROSBoardSocketHandler.MSG_MSG, joy_dict]
+        )
+
+    def on_image(self, cv_image):
+        if self.event_loop == None:
+            return
+        
+        _, jpeg_image = cv2.imencode('.jpg', cv_image)
+        base64_image = base64.b64encode(jpeg_image).decode('utf-8')
+
+        image_dict = ros2dict(base64_image)
+
+        self.event_loop.add_callback(
+            ROSBoardSocketHandler.broadcast,
+            [ROSBoardSocketHandler.MSG_MSG, image_dict]
+        )
+
+    def on_webrtc_offer(self, offer):
+        self.webrtc_subscriber = WebRTCSubscriber(offer, self.on_video_frame)
+
+    def on_video_frame(self, data):
+        if self.event_loop == None:
+            return
+        
+        try:
+            np_arr = np.frombuffer(data, np.uint8)
+            frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+
+            _, jpeg_frame = cv2.imencode('.jpg', frame)
+
+            base64_frame = base64.b64encode(jpeg_frame).decode('utf-8')
+
+            frame_dict = ros2dict(base64_frame)
+
+            self.event_loop.add_callback(
+                ROSBoardSocketHandler.brodcast,
+                [ROSBoardSocketHandler.MSG_MSG, frame_dict]
+            )
+        except Exception as e:
+            rospy.logerr("Error processing video frame: %s" % str(e))
 
 def main(args=None):
     ROSBoardNode().start()
