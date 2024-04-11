@@ -26,6 +26,11 @@ from rosboard.subscribers.system_stats_subscriber import SystemStatsSubscriber
 from rosboard.subscribers.dummy_subscriber import DummySubscriber
 from rosboard.handlers import ROSBoardSocketHandler, NoCacheStaticFileHandler
 
+# importing our custom subscribers
+from rosboard.subscribers.diagnostics_subscriber import DiagnosticsSubscriber
+from rosboard.subscribers.pointcloud2_subscriber import PointCloud2Subscriber
+from rosboard.subscribers.laserscan_subscriber import LaserScanSubscriber
+
 class ROSBoardNode(object):
     instance = None
     def __init__(self, node_name = "rosboard_node"):
@@ -219,6 +224,33 @@ class ROSBoardNode(object):
                         rospy.loginfo("Subscribing to _top [non-ros]")
                         self.local_subs[topic_name] = ProcessesSubscriber(self.on_top)
                     continue
+                
+                ## Handling for custom topic types starts below
+
+                # handle custom diagnostics publisher
+                if topic_name == "/diagnostics":
+                    if topic_name not in self.local_subs:
+                        rospy.loginfo("Subscribing to diagnostics")
+                        self.diagnostics_subscriber = DiagnosticsSubscriber(self.on_diagnostics)
+                        # self.diagnostics_subscriber.subscribe(topic_name)
+                        # self.local_subs[topic_name] = DiagnosticsSubscriber(self.on_diagnostics)
+                    continue
+                
+                # handle custom pointcloud2 publisher
+                if topic_name == "pointcloud2":
+                    if topic_name not in self.local_subs:
+                        rospy.loginfo("Subscribing to pointcloud2")
+                        self.pointcloud2_subscriber = PointCloud2Subscriber(self.on_pointcloud2)
+                        self.pointcloud2_subscriber.subscribe(topic_name)
+                        # self.local_subs[topic_name] = PointCloud2Subscriber(self.on_pointcloud2)
+
+                # handle custom laserscan publisher
+                if topic_name == "laserscan":
+                    if topic_name not in self.local_subs:
+                        rospy.loginfo("Subscribing to laserscan")
+                        self.laserscan_subscriber = LaserScanSubscriber(self.on_pointcloud2)
+                        self.laserscan_subscriber.subscribe(topic_name)
+                        # self.local_subs[topic_name] = LaserScanSubscriber(self.on_laserscan)
 
                 # check if remote sub request is not actually a ROS topic before proceeding
                 if topic_name not in self.all_topics:
@@ -368,6 +400,65 @@ class ROSBoardNode(object):
         self.event_loop.add_callback(
             ROSBoardSocketHandler.broadcast,
             [ROSBoardSocketHandler.MSG_MSG, ros_msg_dict]
+        )
+    
+    ## Custom types handling starts below
+    
+    # custom handler for diagnostic messages
+    def on_diagnostics(self, msg):
+        if self.event_loop is None:
+            return
+
+        self.event_loop.add_callback(
+            ROSBoardSocketHandler.broadcast,
+            [
+                ROSBoardSocketHandler.MSdusuG_MSG,
+                {
+                    "_topic_name": "diagnostics",
+                    "_topic_type": "diagnostic_msgs/msg/DiagnosticArray",
+                    "status:": [
+                        {
+                        "name": status.name,
+                        "message": status.message,
+                        "hardware_id": status.hardware_id,
+                        "level": status.level,
+                        "values": [
+                            { "key": kv.key, "value": kv.value } for kv in status.values
+                            ],
+                        } for status in msg.status
+                    ],
+                },
+            ]
+        )
+    
+    def on_pointcloud2(self, msg):
+        if self.event_loop is None:
+            return
+        
+        pointcloud2_dict = ros2dict(msg)
+
+        pointcloud2_dict["_topic_name"] = "pointcloud2"
+        pointcloud2_dict["_topic_type"] = "sensor_msgs/msg/PointCloud2"
+        pointcloud2_dict["_time"] = time.time() * 1000
+
+        self.event_loop.add_callback(
+            ROSBoardSocketHandler.broadcast,
+            [ROSBoardSocketHandler.MSG_MSG, pointcloud2_dict]
+        )
+
+    def on_laserscan(self, msg):
+        if self.event_loop is None:
+            return
+
+        laserscan_dict = ros2dict(msg)
+
+        laserscan_dict["_topic_name"] = "laserscan"
+        laserscan_dict["_topic_type"] = "sensor_msgs/msg/LaserScan"
+        laserscan_dict["_time"] = time.time() * 1000
+
+        self.event_loop.add_callback(
+            ROSBoardSocketHandler.broadcast,
+            [ROSBoardSocketHandler.MSG_MSG, laserscan_dict]
         )
 
 def main(args=None):
